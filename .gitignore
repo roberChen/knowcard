@@ -1,0 +1,14 @@
+# Binaries
+/knowcard
+/tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
