@@ -63,14 +63,18 @@ type CardRevision struct {
 // loads the embedder, and builds the index from card files if needed.
 func Open(cfg Config) (*Store, error) {
 	emb, err := embed.New(embed.Config{
-		Backend:     string(cfg.Embed.Backend),
-		ModelPath:   cfg.Embed.ModelPath,
-		LibPath:     cfg.Embed.LibPath,
-		ContextSize: cfg.Embed.ContextSize,
-		BatchSize:   cfg.Embed.BatchSize,
-		APIBase:     cfg.Embed.APIBase,
-		APIKey:      cfg.Embed.APIKey,
-		Model:       cfg.Embed.Model,
+		Backend:               string(cfg.Embed.Backend),
+		ModelPath:             cfg.Embed.ModelPath,
+		LibPath:               cfg.Embed.LibPath,
+		ContextSize:           cfg.Embed.ContextSize,
+		BatchSize:             cfg.Embed.BatchSize,
+		Pooling:               cfg.Embed.Pooling,
+		APIBase:               cfg.Embed.APIBase,
+		APIKey:                cfg.Embed.APIKey,
+		Model:                 cfg.Embed.Model,
+		Dimensions:            cfg.Embed.Dimensions,
+		DashScopeInternational: cfg.Embed.DashScopeInternational,
+		Instruct:              cfg.Embed.Instruct,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing embedder: %w", err)

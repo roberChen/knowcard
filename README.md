@@ -97,18 +97,85 @@ cards, err := store.GetCards([]string{results[0].ID})
 
 ## Configuration
 
+### Qwen3-VL-Embedding via DashScope (multimodal, recommended)
+
 ```yaml
 # ~/.knowcard/knowcard.yaml
-root: ~/.knowcard
 embed:
-  backend: local          # local | ollama | openai | custom
-  model_path: ~/.knowcard/models/bge-m3.Q8_0.gguf
-  lib_path: ""            # path to libllama (empty = system default)
+  backend: qwen_cloud
+  model: qwen3-vl-embedding          # or tongyi-embedding-vision-plus
+  api_key: sk-xxx                    # DashScope API key
+  dashscope_international: false     # true for intl endpoint
+  dimensions: 1024                   # MRL: 64-4096 depending on model
+  enable_fusion: true                # qwen3-vl: fuse text+image into one vector
+  instruct: "Retrieve relevant knowledge cards"
+```
+
+### Qwen3-Embedding local (CPU, GGUF)
+
+```yaml
+embed:
+  backend: local
+  model_path: ~/.knowcard/models/Qwen3-Embedding-0.6B-GGUF/qwen3-embedding-0.6b.Q8_0.gguf
+  pooling: last                      # Qwen models use last-token pooling
   context_size: 2048
   batch_size: 512
-rrf_k: 60
-candidate_pool: 30
 ```
+
+### Qwen3-VL-Embedding local (CPU, GGUF, text-only)
+
+```yaml
+embed:
+  backend: local
+  model_path: ~/.knowcard/models/Qwen3-VL-Embedding-2B-Q4_K_M.gguf
+  pooling: last
+  context_size: 8192
+```
+
+### Qwen text-embedding-v4 via DashScope (text-only)
+
+```yaml
+embed:
+  backend: qwen_cloud
+  model: text-embedding-v4
+  api_key: sk-xxx
+  dimensions: 1024                   # MRL: 64-2048
+```
+
+### Other backends
+
+```yaml
+# Local bge-m3
+embed:
+  backend: local
+  model_path: ~/.knowcard/models/bge-m3.Q8_0.gguf
+  pooling: mean
+
+# Ollama
+embed:
+  backend: ollama
+  model: nomic-embed-text
+```
+
+## Supported Embedding Models
+
+### Qwen Models (recommended)
+
+| Model | Mode | Backend | Notes |
+|---|---|---|---|
+| Qwen3-VL-Embedding-2B/8B | Multimodal (text+image+video) | `local` (GGUF) or `qwen_cloud` | 33 languages, MRL dims, latest Qwen VL embed |
+| Qwen3-Embedding-0.6B/4B/8B | Text-only | `local` (GGUF) or `qwen_cloud` | #1 MTEB multilingual, 100+ languages |
+| text-embedding-v4 | Text-only | `qwen_cloud` | DashScope cloud API, MRL dims |
+| tongyi-embedding-vision-plus | Multimodal | `qwen_cloud` | DashScope cloud, text+image+video |
+
+### Other Models
+
+| Model | Backend | Notes |
+|---|---|---|
+| bge-m3 | `local` | Chinese/English bilingual |
+| nomic-embed-text | `ollama` | Via Ollama service |
+| text-embedding-3-small | `openai` | Via OpenAI API |
+| Any OpenAI-compatible | `custom` | Configurable base URL |
 
 ## Tech Stack
 

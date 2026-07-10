@@ -12,10 +12,11 @@ import (
 type EmbedBackend string
 
 const (
-	EmbedLocal   EmbedBackend = "local"   // yzma + GGUF, CPU inference
-	EmbedOllama  EmbedBackend = "ollama"  // Ollama API
-	EmbedOpenAI  EmbedBackend = "openai"  // OpenAI API
-	EmbedCustom  EmbedBackend = "custom"  // OpenAI-compatible API
+	EmbedLocal       EmbedBackend = "local"       // yzma + GGUF, CPU inference
+	EmbedOllama      EmbedBackend = "ollama"      // Ollama API
+	EmbedOpenAI      EmbedBackend = "openai"      // OpenAI API
+	EmbedCustom      EmbedBackend = "custom"      // OpenAI-compatible API
+	EmbedQwenCloud   EmbedBackend = "qwen_cloud"  // DashScope native API (text + VL multimodal)
 )
 
 // Config defines all runtime configuration for knowcard.
@@ -37,15 +38,24 @@ type EmbedConfig struct {
 	Backend EmbedBackend `yaml:"backend"`
 
 	// Local (yzma) settings
-	ModelPath string `yaml:"model_path,omitempty"` // path to .gguf file
-	LibPath   string `yaml:"lib_path,omitempty"`   // path to libllama shared library
+	ModelPath  string `yaml:"model_path,omitempty"` // path to .gguf file
+	LibPath    string `yaml:"lib_path,omitempty"`   // path to libllama shared library
 	ContextSize uint32 `yaml:"context_size,omitempty"`
 	BatchSize   uint32 `yaml:"batch_size,omitempty"`
+	Pooling    string `yaml:"pooling,omitempty"` // "mean", "cls", "last" (default "last" for Qwen models)
 
-	// API settings (Ollama / OpenAI / custom)
+	// API settings (Ollama / OpenAI / custom / DashScope)
 	APIBase string `yaml:"api_base,omitempty"`
 	APIKey  string `yaml:"api_key,omitempty"`
 	Model   string `yaml:"model,omitempty"`
+
+	// Dimensions for MRL models (Qwen3-Embedding, Qwen3-VL-Embedding, etc.)
+	// 0 means use model default
+	Dimensions int `yaml:"dimensions,omitempty"`
+
+	// DashScope-specific
+	DashScopeInternational bool   `yaml:"dashscope_international,omitempty"` // true = intl endpoint, false = domestic
+	Instruct              string `yaml:"instruct,omitempty"`                // task instruction for retrieval
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
