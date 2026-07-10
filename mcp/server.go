@@ -15,7 +15,7 @@ import (
 
 const serverInstructions = `# knowcard — Agent Memory System
 
-This server provides a persistent knowledge memory. Use it to store, search, and manage knowledge cards (self-contained markdown notes with structured metadata).
+This server provides a persistent knowledge memory for the current project. Use it to store, search, and manage knowledge cards (self-contained markdown notes with structured metadata).
 
 ## Core Workflow
 

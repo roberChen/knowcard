@@ -15,13 +15,17 @@ Local agent memory system with hybrid vector + keyword search. Knowledge is stor
 ## Architecture
 
 ```
-~/.knowcard/
+<project-root>/.knowcard/
 ├── cards/              Knowledge cards as .md files (semantic tree structure)
 ├── _vcs/               Git metadata (separated from cards, CLI-invisible)
 ├── index/
 │   └── chromem/        Vector index (derived, rebuildable)
-└── models/             GGUF embedding model cache
+├── models/             GGUF embedding model cache
+├── manifest.json       Integrity checkpoint (HEAD commit + card count)
+└── knowcard.yaml       Config file
 ```
+
+knowcard searches upward from the current directory to find the `.knowcard/` directory, just like git finds `.git/`. Each project has its own knowledge base scoped to its domain.
 
 **Card format:**
 
@@ -47,7 +51,7 @@ updated: 2026-07-10T10:00:00Z
 ### CLI
 
 ```bash
-# Initialize
+# Initialize .knowcard in current project directory
 knowcard init
 
 # Add a card
@@ -100,7 +104,7 @@ cards, err := store.GetCards([]string{results[0].ID})
 ### Qwen3-VL-Embedding via DashScope (multimodal, recommended)
 
 ```yaml
-# ~/.knowcard/knowcard.yaml
+# <project>/.knowcard/knowcard.yaml
 embed:
   backend: qwen_cloud
   model: qwen3-vl-embedding          # or tongyi-embedding-vision-plus

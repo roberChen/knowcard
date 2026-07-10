@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	kc "github.com/robert/knowcard"
@@ -57,7 +59,7 @@ Usage:
   knowcard <command> [options]
 
 Commands:
-  init                        Initialize data directory
+  init                        Initialize .knowcard in current project directory
   recall <query>              Search cards (hybrid semantic + keyword)
   show <id> [<id>...]         Show full card content
   add                         Add a card (from file or flags)
@@ -67,37 +69,64 @@ Commands:
   rebuild                     Rebuild indexes from .md files
   history <id>                Show revision history for a card
   serve                       Start MCP server (stdio)
+  config                      Show current configuration
+
+The knowledge base lives in .knowcard/ at the project root.
+knowcard searches upward from CWD to find it, just like git finds .git/.
+Global config (embed backend, API keys) lives in
+~/.config/knowcard/config.yaml.
 
 Options:
-  --config <path>             Path to config file (default: ~/.knowcard/knowcard.yaml)
+  --config <path>             Path to config file (overrides global config)
+  --root <path>               Project root to search from (overrides CWD)
 `)
 }
 
+// loadConfig loads the global config and resolves the knowledge base root
+// by walking upward from CWD (or --root).
 func loadConfig() kc.Config {
 	configPath := ""
+	rootDir := ""
 	for i, a := range os.Args {
 		if a == "--config" && i+1 < len(os.Args) {
 			configPath = os.Args[i+1]
 		}
+		if a == "--root" && i+1 < len(os.Args) {
+			rootDir = os.Args[i+1]
+		}
 	}
 
+	var cfg kc.Config
 	if configPath != "" {
-		cfg, err := kc.Load(configPath)
+		c, err := kc.Load(configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 			os.Exit(1)
 		}
-		return *cfg
+		cfg = *c
+	} else {
+		c, err := kc.LoadGlobal()
+		if err != nil {
+			if os.IsNotExist(err.(*fs.PathError)) || strings.Contains(err.Error(), "no such file") {
+				fmt.Fprintf(os.Stderr, "no global config found at %s\nRun 'knowcard init' first.\n", kc.GlobalConfigPath())
+			} else {
+				fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+			}
+			os.Exit(1)
+		}
+		cfg = *c
 	}
 
-	def := kc.DefaultConfig()
-	if _, err := os.Stat(def.ConfigPath()); err == nil {
-		cfg, err := kc.Load(def.ConfigPath())
-		if err == nil {
-			return *cfg
-		}
+	if rootDir == "" {
+		rootDir, _ = os.Getwd()
 	}
-	return def
+	root, err := kc.FindRoot(rootDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\nRun 'knowcard init' in the project root first.\n", err)
+		os.Exit(1)
+	}
+	cfg.Root = root
+	return cfg
 }
 
 func openStore() *kc.Store {
@@ -112,34 +141,41 @@ func openStore() *kc.Store {
 
 func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	configPath := fs.String("config", "", "config file path")
+	rootDir := fs.String("root", ".", "project root directory (default: current directory)")
 	fs.Parse(args)
 
-	cfg := kc.DefaultConfig()
-	if *configPath != "" {
-		c, err := kc.Load(*configPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	// 1. Resolve and create .knowcard directory in the project
+	absRoot, err := filepath.Abs(*rootDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	kcDir := filepath.Join(absRoot, kc.DirName)
+	if err := os.MkdirAll(kcDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s: %v\n", kcDir, err)
+		os.Exit(1)
+	}
+	for _, sub := range []string{"cards", "_vcs", "index"} {
+		os.MkdirAll(filepath.Join(kcDir, sub), 0755)
+	}
+
+	// 2. Ensure global config exists; create with defaults if missing
+	cfgPath := kc.GlobalConfigPath()
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		cfg := kc.DefaultConfig()
+		if err := kc.SaveGlobal(&cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "error saving global config: %v\n", err)
 			os.Exit(1)
 		}
-		cfg = *c
+		fmt.Printf("Created global config at %s\n", cfgPath)
 	}
 
-	if err := cfg.EnsureDirs(); err != nil {
-		fmt.Fprintf(os.Stderr, "error creating directories: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := cfg.Save(); err != nil {
-		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Initialized knowcard at %s\n", cfg.Root)
-	fmt.Printf("  Cards:   %s\n", cfg.CardsDir())
-	fmt.Printf("  Index:   %s\n", cfg.IndexDir())
-	fmt.Printf("  VCS:     %s\n", cfg.VcsDir())
-	fmt.Printf("  Models:  %s\n", cfg.ModelsDir())
+	fmt.Printf("Initialized knowcard knowledge base at %s\n", kcDir)
+	fmt.Printf("  Cards:   %s\n", filepath.Join(kcDir, "cards"))
+	fmt.Printf("  VCS:     %s\n", filepath.Join(kcDir, "_vcs"))
+	fmt.Printf("  Index:   %s\n", filepath.Join(kcDir, "index"))
+	fmt.Printf("\nGlobal config: %s\n", cfgPath)
+	fmt.Printf("Edit it to configure your embedding backend and API keys.\n")
 }
 
 func cmdRecall(args []string) {

@@ -260,10 +260,6 @@ type manifest struct {
 	Updated    string `json:"updated"`
 }
 
-func (s *Store) manifestPath() string {
-	return filepath.Join(s.cfg.Root, "manifest.json")
-}
-
 func (s *Store) writeManifest() error {
 	head, _ := s.repo.Head()
 	var headHash string
@@ -276,7 +272,7 @@ func (s *Store) writeManifest() error {
 		Updated:    time.Now().Format(time.RFC3339),
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
-	return os.WriteFile(s.manifestPath(), data, 0644)
+	return os.WriteFile(s.cfg.ManifestPath(), data, 0644)
 }
 
 // openOrInitRepo opens or initialises a git repository with the git metadata

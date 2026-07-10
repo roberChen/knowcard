@@ -2,6 +2,10 @@
 /knowcard
 /tmp/
 
+# knowcard data (contains index, models, API keys — not for VCS)
+/.knowcard/
+/.crush.json
+
 # OS files
 .DS_Store
 Thumbs.db
