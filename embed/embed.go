@@ -65,6 +65,13 @@ func New(cfg Config) (Embedder, error) {
 			Instruct:      cfg.Instruct,
 			EnableFusion:  cfg.EnableFusion,
 		})
+	case "siliconflow":
+		return NewSiliconFlowEmbedder(SiliconFlowConfig{
+			APIKey:     cfg.APIKey,
+			Model:      cfg.Model,
+			BaseURL:    cfg.APIBase,
+			Dimensions: cfg.Dimensions,
+		})
 	default:
 		return nil, fmt.Errorf("unknown embed backend: %s", cfg.Backend)
 	}

@@ -17,6 +17,7 @@ const (
 	EmbedOpenAI      EmbedBackend = "openai"      // OpenAI API
 	EmbedCustom      EmbedBackend = "custom"      // OpenAI-compatible API
 	EmbedQwenCloud   EmbedBackend = "qwen_cloud"  // DashScope native API (text + VL multimodal)
+	EmbedSiliconFlow EmbedBackend = "siliconflow" // SiliconFlow OpenAI-compatible API (text + VL)
 )
 
 // Config defines all runtime configuration for knowcard.
@@ -53,7 +54,8 @@ type EmbedConfig struct {
 	// 0 means use model default
 	Dimensions int `yaml:"dimensions,omitempty"`
 
-	// DashScope-specific
+	// SiliconFlow-specific (optional, used when backend=siliconflow)
+	// Uses api_base, api_key, model, dimensions from above fields
 	DashScopeInternational bool   `yaml:"dashscope_international,omitempty"` // true = intl endpoint, false = domestic
 	Instruct              string `yaml:"instruct,omitempty"`                // task instruction for retrieval
 }
@@ -106,13 +108,16 @@ func (c *Config) ConfigPath() string {
 }
 
 // Load reads the config file from disk, falling back to defaults.
+// Environment variables in the form ${VAR} are expanded in all string fields.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
+	// Expand environment variables before parsing
+	expanded := os.ExpandEnv(string(data))
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	if cfg.Root == "" {
