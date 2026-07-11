@@ -52,6 +52,9 @@ type RecallOpts struct {
 	Tags     []string // filter by tags
 }
 
+// CardsDir returns the absolute path to the cards directory.
+func (s *Store) CardsDir() string { return s.cfg.CardsDir() }
+
 // CardRevision represents one git revision of a card.
 type CardRevision struct {
 	Hash    string    `json:"hash"`
@@ -147,7 +150,13 @@ func (s *Store) loadIndex() error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), "_") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
 		c, err := card.ReadCard(path, s.cfg.CardsDir())
@@ -192,7 +201,13 @@ func (s *Store) Rebuild() error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), "_") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
 		c, err := card.ReadCard(path, s.cfg.CardsDir())

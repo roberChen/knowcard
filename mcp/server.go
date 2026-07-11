@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -15,46 +18,164 @@ import (
 
 const serverInstructions = `# knowcard — Agent Memory System
 
-This server provides a persistent knowledge memory for the current project. Use it to store, search, and manage knowledge cards (self-contained markdown notes with structured metadata).
+This server is the project's local wiki and knowledge base. It stores knowledge as "cards" (self-contained markdown notes with structured metadata), indexed for hybrid vector + keyword search. Think of it as the first place to look when you need to understand something about this project or its domain, and the place to write back when you learn something new.
 
-## Core Workflow
+## CRITICAL: The Recall-Record Cycle
 
-1. **recall** — When you encounter domain-specific knowledge or a question about a topic, search first with keywords or a natural language query. This returns card summaries (not full content).
-2. **get_cards** — If recall found relevant cards, read their full content by passing the card IDs.
-3. **upsert_card** — After solving a problem or learning something worth remembering, save it as a new card OR update an existing card (pass the id to update).
+When a task involves the project or its domain, your work follows a two-phase cycle: **recall first, record after.** If the task has nothing to do with the project or domain (e.g., general chat, standard library syntax, universal knowledge), skip both phases entirely — no recall needed, no recording expected.
+
+### Phase 1 — Recall (when you need project/domain knowledge)
+
+1. **RECALL FIRST** — When a task requires understanding anything about this project or its domain, call recall with relevant keywords BEFORE doing other work (code search, web search, file reading, etc.). The knowledge base is the project's local wiki — it may already contain the answer, architecture details, debugging solutions, conventions, or context you need. Consult it first so you don't reinvent the wheel.
+   - If the task is entirely unrelated to the project/domain, skip this phase.
+2. **JUDGE RELEVANCE** — After recall returns results, explicitly state whether the results are highly relevant, partially relevant, or not relevant to the current task. Judge relevance by reading each card's title and summary and considering how directly it addresses your task — do NOT rely on the score value, which is relative and varies widely across queries and index sizes. Do NOT silently skip to the next step.
+   - **Highly relevant** (the summary clearly describes exactly your topic): call get_cards to read the full content before investigating.
+   - **Partially relevant** (the summary touches the topic but isn't directly about it): call get_cards on the best 1–2 candidates, but proceed to investigation in parallel.
+   - **Not relevant** (the results are about unrelated topics despite any score): explicitly state "recall returned no relevant cards" and proceed to investigation from scratch.
+3. **GET_CARDS** — If recall found relevant cards (high or partial), read their full content by passing the card IDs.
+4. **WORK** — Continue with whatever the task requires: code search, web search, file editing, investigation, etc. Use what you learned from cards as your starting point, and fill gaps with your own work.
+
+### Phase 2 — Record (when you discovered project/domain knowledge)
+
+After completing your work, reflect on whether you discovered or learned new project/domain knowledge that isn't already in the wiki. If so, record it promptly — keeping the wiki up to date is part of completing your task. New knowledge worth recording includes:
+- Code details: function signatures, file:line references, architecture patterns, data flow
+- Specific constants, thresholds, config values, or limits
+- Business logic, behavioral flows, design decisions, or conventions
+- Debugging solutions, gotchas, or pitfalls encountered
+- Domain knowledge or conceptual insights relevant to the project
+- Anything that contradicts, refines, or extends what existing cards say
+- Any topic with no existing card coverage after a recall search
+
+**If new knowledge was discovered, you MUST complete these steps BEFORE composing your final response:**
+
+5. **RECALL BEFORE UPSERT** — Call recall with keywords related to the new knowledge to find existing cards that should be updated. Do NOT create a card without checking first.
+6. **DECIDE: UPDATE OR CREATE** — Explicitly state your decision and reasoning:
+   - **UPDATE** (existing card found): "Updating card <id> because <what changed>" — pass the existing card's id to upsert_card.
+   - **CREATE** (no relevant card found): "Creating new card because <why this topic is distinct and no existing card covers it>" — omit id in upsert_card.
+7. **UPSERT** — Execute the upsert_card call.
+
+### When the Cycle Does Not Apply
+
+Skip both phases entirely when the task is unrelated to the project or domain — e.g., general conversation, universal programming knowledge, standard library syntax. In these cases there is nothing to recall and nothing worth recording.
+
+Phase 1 (recall) always applies when the task touches the project or domain. Phase 2 (record) can additionally be skipped if your work discovered nothing new beyond what existing cards already cover.
+
+**If you decide to skip Phase 2, you MUST explicitly state why.** For example: "Not recording — this is general knowledge about standard library usage, not specific to this project." Do not silently skip.
+
+**When in doubt, record.** A slightly redundant card is far better than lost knowledge.
+
+### Pre-Response Checklist
+
+Before sending your final reply to the user, verify:
+- If the task involved the project/domain: did I recall before doing other work?
+- Did my work discover new project/domain knowledge not already in the wiki?
+- If yes: did I recall for duplicates, decide update/create, and execute upsert_card?
+- If no new knowledge: did I explicitly state why I am not recording?
 
 ## When to Use Each Tool
 
-- **recall**: Before answering a question, check if relevant knowledge already exists. Also use it to check for duplicates before creating a new card.
-- **get_cards**: After recall gives you relevant card IDs, use this to read full details.
-- **upsert_card**: When you learn something new that would be useful in future conversations — code patterns, architectural decisions, debugging solutions, project conventions, domain knowledge, etc. ALWAYS call recall first to check if a similar card exists; update rather than duplicate.
+- **recall**: When you need project/domain knowledge. Always before other work (code search, web search, file reading). This is the project's local wiki — consult it first.
+- **get_cards**: After recall returns relevant results.
+- **upsert_card**: When you discovered new project/domain knowledge. Keep the wiki up to date — recording is part of completing your task, not an optional follow-up.
 - **delete_card**: When a card is outdated, incorrect, or no longer relevant.
+- **init**: When no knowledge base exists for the current directory.
+
+## When to UPDATE a Card
+
+Pass the existing card's id to upsert_card when you discover ANY of:
+- Specific constants, numbers, or thresholds not in the card (buffer sizes, timeout values, config keys)
+- Implementation details not captured (function signatures, file:line references, data flow)
+- Business logic or behavioral flow the card doesn't describe
+- Behavior that contradicts, refines, or extends the card's current description
+- Missing context that would help a future reader act on the knowledge
+
+## When to CREATE a New Card
+
+- No existing card covers the topic after a recall search
+- The topic is distinct enough to warrant a separate card (don't mix unrelated topics)
+
+## Common Mistakes (AVOID)
+
+- Doing code search, web search, or file reading before consulting the wiki via recall
+- Doing fresh work without reading existing relevant cards first
+- Getting recall results and silently skipping get_cards — you MUST explicitly judge relevance and act on it
+- **Completing your work, then sending your response WITHOUT recording new knowledge to the wiki**
+- **Treating recording as optional or "when the user asks"** — updating the wiki IS part of completing your task
+- Discovering new project/domain details but only recording them when explicitly asked
+- Creating duplicate cards instead of updating existing ones (always pass the existing card id)
+- Calling upsert_card without first calling recall to check for existing cards
+- Calling upsert_card without explicitly stating whether it's an update or create, and why
 
 ## Path Convention
 
-Paths form a semantic knowledge tree. Use forward-slash hierarchy:
+Use forward-slash hierarchy with lowercase-with-hyphens:
   - programming/go/goroutine-scheduler
   - databases/postgres/query-tuning
   - devops/docker/multi-stage-builds
   - concepts/cap-theorem
-
-Choose paths that group related knowledge together. Use lowercase with hyphens.
 
 ## What Makes a Good Card
 
 - Self-contained: a future reader should understand it without external context
 - Focused: one topic per card, not a dump of everything
 - Actionable: includes specifics (code snippets, commands, config) not just theory
+- Concise: keep the body under 4096 tokens. If content is too long, shorten the body to a summary and attach the full version as a reference file
 - Summarizable: the summary field should let you decide if the card is worth reading`
 
 // Server wraps the knowcard Store as an MCP server.
+// The store is opened eagerly in NewServer by searching for .knowcard/
+// upward from the process's working directory. If no knowledge base is
+// found, the server still starts — tool calls will fail with a hint to
+// use the init tool.
 type Server struct {
+	cfg   kc.Config
+	mu    sync.Mutex
 	store *kc.Store
 }
 
-// NewServer creates an MCP server backed by the given Store.
-func NewServer(s *kc.Store) *Server {
-	return &Server{store: s}
+// NewServer creates an MCP server with the given global config.
+// It eagerly attempts to find and open a knowledge base from the current
+// working directory. If none is found, the server starts without a store.
+func NewServer(cfg kc.Config) *Server {
+	s := &Server{cfg: cfg}
+	s.tryOpenStore()
+	return s
+}
+
+// tryOpenStore searches for .knowcard/ upward from CWD and opens the store
+// if found. Failures are silent — the server can still start without a store.
+func (s *Server) tryOpenStore() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store != nil {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	root, err := kc.FindRoot(cwd)
+	if err != nil {
+		return
+	}
+	cfg := s.cfg
+	cfg.Root = root
+	store, err := kc.Open(cfg)
+	if err != nil {
+		return
+	}
+	s.store = store
+}
+
+// store returns the opened store, or an error if no knowledge base is
+// available.
+func (s *Server) getStore() (*kc.Store, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store != nil {
+		return s.store, nil
+	}
+	return nil, fmt.Errorf("no knowledge base found for the current directory")
 }
 
 // Serve starts the MCP server over stdio.
@@ -68,8 +189,19 @@ func (s *Server) Serve() error {
 	mcpSrv.AddTool(s.getCardsTool(), s.handleGetCards)
 	mcpSrv.AddTool(s.upsertCardTool(), s.handleUpsertCard)
 	mcpSrv.AddTool(s.deleteCardTool(), s.handleDeleteCard)
+	mcpSrv.AddTool(s.initTool(), s.handleInit)
 
 	return server.ServeStdio(mcpSrv)
+}
+
+// noKnowledgeBaseResult returns an error result instructing the agent
+// to call the init tool.
+func noKnowledgeBaseResult() *mcp.CallToolResult {
+	return mcp.NewToolResultError(
+		"No knowledge base (.knowcard/) found for the current directory.\n" +
+			"Use the 'init' tool to create one in the current directory, " +
+			"then retry your request.",
+	)
 }
 
 // --- recall ---
@@ -78,13 +210,18 @@ func (s *Server) recallTool() mcp.Tool {
 	return mcp.NewTool("recall",
 		mcp.WithDescription(`Search the knowledge card memory system using hybrid vector + keyword search.
 
-Returns matching cards with title, summary, relevance score, and hit type. Use this to:
-- Check if knowledge about a topic already exists before answering or creating a card
-- Find relevant cards to read in full (via get_cards)
+Search the project's local wiki using hybrid vector + keyword search.
+
+Returns matching cards with title, summary, relevance score, and hit type. Call this when you need to understand something about the project or its domain — BEFORE code search, web search, file reading, or any other work. The wiki may already contain the answer, architecture details, debugging solutions, conventions, or context you need.
 
 The "hit_type" field indicates how the card matched: "semantic" (meaning-based), "keyword" (exact term match), or "both" (strongest match).
 
-**Workflow**: Call recall first → review summaries → use get_cards on selected IDs to read full content.`),
+**After recall, you MUST explicitly judge relevance based on the card's title, summary, and how directly it addresses your task — NOT on the score value.** Scores are relative and vary widely across queries and index sizes, so fixed score thresholds are unreliable. Use your own judgment reading the content instead:
+- Highly relevant (the summary clearly describes exactly your topic): call get_cards to read full content.
+- Partially relevant (the summary touches but doesn't directly address your topic): call get_cards on the best 1-2 candidates.
+- Not relevant (the results are about unrelated topics despite any score): explicitly state "recall returned no relevant cards" and proceed without get_cards.
+
+Do NOT silently skip to the next step without stating your relevance judgment.`),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Search query — keywords or a natural language sentence in any language (Chinese/English both work)"),
@@ -99,6 +236,11 @@ The "hit_type" field indicates how the card matched: "semantic" (meaning-based),
 }
 
 func (s *Server) handleRecall(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	store, err := s.getStore()
+	if err != nil {
+		return noKnowledgeBaseResult(), nil
+	}
+
 	query, err := req.RequireString("query")
 	if err != nil {
 		return mcp.NewToolResultError("query is required"), nil
@@ -114,7 +256,7 @@ func (s *Server) handleRecall(ctx context.Context, req mcp.CallToolRequest) (*mc
 		}
 	}
 
-	results, err := s.store.Recall(query, opts)
+	results, err := store.Recall(query, opts)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recall failed: %v", err)), nil
 	}
@@ -146,7 +288,9 @@ func (s *Server) getCardsTool() mcp.Tool {
 
 Each card is returned in full, including title, keywords, summary, body (markdown), and reference links. Pass IDs obtained from the recall tool.
 
-**Workflow**: recall → get_cards (selected IDs).`),
+**Only call get_cards when recall returned relevant results.** If recall returned no relevant results, do not call this tool — state that explicitly and proceed with your own work.
+
+**Workflow**: recall → judge relevance → get_cards (only if relevant) → proceed with task.`),
 		mcp.WithArray("ids",
 			mcp.Required(),
 			mcp.Description("Card IDs to retrieve (obtain these from recall results)"),
@@ -156,6 +300,11 @@ Each card is returned in full, including title, keywords, summary, body (markdow
 }
 
 func (s *Server) handleGetCards(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	store, err := s.getStore()
+	if err != nil {
+		return noKnowledgeBaseResult(), nil
+	}
+
 	args := req.GetArguments()
 	idsVal, ok := args["ids"]
 	if !ok {
@@ -183,7 +332,7 @@ func (s *Server) handleGetCards(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("ids must contain at least one card ID"), nil
 	}
 
-	cards, err := s.store.GetCards(ids)
+	cards, err := store.GetCards(ids)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get cards failed: %v", err)), nil
 	}
@@ -192,6 +341,10 @@ func (s *Server) handleGetCards(ctx context.Context, req mcp.CallToolRequest) (*
 	for i, c := range cards {
 		if i > 0 {
 			sb.WriteString("\n---\n\n")
+		}
+		// Resolve reference to absolute path for display
+		if c.Reference != "" {
+			c.Reference = filepath.Join(store.CardsDir(), c.Reference)
 		}
 		content, _ := card.Serialize(&c)
 		sb.WriteString(content)
@@ -211,7 +364,14 @@ func (s *Server) upsertCardTool() mcp.Tool {
 	return mcp.NewTool("upsert_card",
 		mcp.WithDescription(`Create or update a knowledge card. This is how the memory system learns.
 
-**Before creating**: call recall with relevant keywords to check if a similar card already exists. If it does, pass its "id" to update it instead of creating a duplicate.
+**IMPORTANT — When to call this tool**: When your work discovered new project/domain knowledge that isn't already in the wiki — code details, architecture patterns, constants, behavioral flows, debugging solutions, conventions, domain insights. Recording it is part of completing your task, NOT an optional follow-up. When in doubt, record.
+
+**Before calling this tool, you MUST**:
+1. Call recall with relevant keywords to check if a similar card already exists.
+2. Explicitly state your decision and reasoning:
+   - If updating: "Updating card <id> because <what changed>" — pass the existing card's id.
+   - If creating: "Creating new card because <why this topic is distinct and uncovered>" — omit id.
+3. Then execute the upsert_card call.
 
 **When to create**: you learned something worth remembering — code patterns, architectural decisions, debugging solutions, project conventions, domain knowledge, tool configurations, etc.
 
@@ -221,9 +381,9 @@ func (s *Server) upsertCardTool() mcp.Tool {
 - path: semantic location in the knowledge tree (e.g. 'programming/go/memory-escape')
 - title: concise, descriptive (what is this card about?)
 - summary: 1-2 sentences answering "what will I learn from this card?"
-- body: the actual knowledge, in markdown — code blocks, commands, explanations
+- body: the actual knowledge, in markdown — keep it concise (max 4096 tokens). If the body is too long, the upsert will fail with guidance to shorten it.
 - keywords: terms someone would search for to find this card
-- reference: link to source docs/repos for deeper context (optional)`),
+- reference: path to a local file containing detailed documentation (optional). The file is copied into the knowledge base and version-controlled. Use this for content that doesn't fit in the body — full design docs, lengthy code samples, detailed configurations. If the file does not exist, upsert will fail.`),
 		mcp.WithString("path",
 			mcp.Required(),
 			mcp.Description("Semantic path in the knowledge tree. Use lowercase-with-hyphens and / for hierarchy. Examples: 'programming/go/goroutine-scheduler', 'databases/redis/persistence', 'concepts/cap-theorem'. Choose a path that groups related cards together."),
@@ -238,14 +398,14 @@ func (s *Server) upsertCardTool() mcp.Tool {
 		),
 		mcp.WithString("body",
 			mcp.Required(),
-			mcp.Description("Full card content in markdown. Include code blocks, commands, diagrams (text), and explanations. Keep under 4096 tokens for best embedding quality. Be self-contained — a future reader should understand it without external context."),
+			mcp.Description("Full card content in markdown. Include code blocks, commands, diagrams (text), and explanations. Keep UNDER 4096 tokens — if the body exceeds this limit, upsert will fail and prompt you to shorten the body and move detailed content to a reference file. Be concise and self-contained."),
 		),
 		mcp.WithArray("keywords",
 			mcp.Description("Keywords that someone might search for to find this card. Include both Chinese and English terms if relevant."),
 			mcp.Items(map[string]interface{}{"type": "string"}),
 		),
 		mcp.WithString("reference",
-			mcp.Description("Path or URL to reference documentation, source code, or related resources for deeper context"),
+			mcp.Description("Path to a local file to attach as a reference document (e.g. '/home/user/project/docs/design.md'). The file is copied into the knowledge base, version-controlled, and its absolute path is shown when reading the card. Use this for detailed content that doesn't fit in the body. The file MUST exist — if it doesn't, upsert will fail."),
 		),
 		mcp.WithString("id",
 			mcp.Description("To UPDATE an existing card, pass its ID here. Omit this field to create a new card."),
@@ -254,6 +414,11 @@ func (s *Server) upsertCardTool() mcp.Tool {
 }
 
 func (s *Server) handleUpsertCard(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	store, err := s.getStore()
+	if err != nil {
+		return noKnowledgeBaseResult(), nil
+	}
+
 	c := &card.Card{}
 
 	c.Path, _ = req.GetArguments()["path"].(string)
@@ -273,8 +438,8 @@ func (s *Server) handleUpsertCard(ctx context.Context, req mcp.CallToolRequest) 
 		switch v := kw.(type) {
 		case []interface{}:
 			for _, item := range v {
-				if s, ok := item.(string); ok {
-					c.Keywords = append(c.Keywords, s)
+				if str, ok := item.(string); ok {
+					c.Keywords = append(c.Keywords, str)
 				}
 			}
 		case string:
@@ -282,7 +447,7 @@ func (s *Server) handleUpsertCard(ctx context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
-	if err := s.store.UpsertCard(c); err != nil {
+	if err := store.UpsertCard(c); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("upsert failed: %v", err)), nil
 	}
 
@@ -311,14 +476,75 @@ Only delete cards that are incorrect, outdated beyond repair, or completely irre
 }
 
 func (s *Server) handleDeleteCard(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	store, err := s.getStore()
+	if err != nil {
+		return noKnowledgeBaseResult(), nil
+	}
+
 	id, err := req.RequireString("id")
 	if err != nil {
 		return mcp.NewToolResultError("id is required"), nil
 	}
 
-	if err := s.store.DeleteCard(id); err != nil {
+	if err := store.DeleteCard(id); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("delete failed: %v", err)), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Card %s has been deleted.", id)), nil
+}
+
+// --- init ---
+
+func (s *Server) initTool() mcp.Tool {
+	return mcp.NewTool("init",
+		mcp.WithDescription(`Initialize a knowledge base in the current directory.
+
+This creates a .knowcard/ directory with the required subdirectories (cards/, _vcs/, index/). Call this when no knowledge base exists for the current project.
+
+After init succeeds, recall/upsert_card/get_cards/delete_card become available for this directory.`),
+		mcp.WithString("dir",
+			mcp.Description("Directory to initialize the knowledge base in (default: current working directory)"),
+		),
+	)
+}
+
+func (s *Server) handleInit(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dir, _ := req.GetArguments()["dir"].(string)
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("getting current directory: %v", err)), nil
+		}
+	}
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("resolving path: %v", err)), nil
+	}
+
+	kcDir := filepath.Join(absDir, kc.DirName)
+	if _, err := os.Stat(kcDir); err == nil {
+		return mcp.NewToolResultText(fmt.Sprintf("Knowledge base already exists at %s", kcDir)), nil
+	}
+
+	cfg := s.cfg
+	cfg.Root = kcDir
+	if err := cfg.EnsureDirs(); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("creating knowledge base: %v", err)), nil
+	}
+
+	store, err := kc.Open(cfg)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("opening store: %v", err)), nil
+	}
+
+	s.mu.Lock()
+	if s.store != nil {
+		s.store.Close()
+	}
+	s.store = store
+	s.mu.Unlock()
+
+	return mcp.NewToolResultText(fmt.Sprintf("Initialized knowledge base at %s", kcDir)), nil
 }

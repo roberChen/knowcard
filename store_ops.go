@@ -3,6 +3,9 @@ package knowcard
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -136,7 +139,7 @@ func (s *Store) ListCards(pathPrefix string) []RecallResult {
 }
 
 // UpsertCard adds or replaces a card. It writes the .md file, updates both
-// indexes, and auto-commits to git.
+// indexes, copies any reference file into the KB, and auto-commits to git.
 func (s *Store) UpsertCard(c *card.Card) error {
 	// Token count validation
 	if tc, ok := s.embedder.(embed.TokenCounter); ok {
@@ -155,16 +158,20 @@ func (s *Store) UpsertCard(c *card.Card) error {
 	}
 	c.Updated = now
 
+	// Handle reference file: if c.Reference is an external path (not already
+	// stored in the KB), copy it into the KB's _refs/ directory.
+	if c.Reference != "" && !isStoredRef(c.Reference) {
+		if err := s.copyReferenceFile(c); err != nil {
+			return err
+		}
+	}
+
 	// If card already exists (by ID), remove old entries
-	if oldPath, exists := s.idToPath[c.ID]; exists {
+	if _, exists := s.idToPath[c.ID]; exists {
 		if err := s.deleteFromVectorIndex(c.ID); err != nil {
 			return fmt.Errorf("removing old vector: %w", err)
 		}
 		s.bm25.RemoveDocument(c.ID)
-		// If path changed, delete old file
-		if oldPath != c.Path {
-			card.DeleteCardFile(oldPath, s.cfg.CardsDir())
-		}
 	}
 
 	// Write .md file
@@ -174,7 +181,7 @@ func (s *Store) UpsertCard(c *card.Card) error {
 
 	// Add to vector index
 	if err := s.addToVectorIndex(c); err != nil {
-		return fmt.Errorf("indexing card: %w", err)
+		return fmt.Errorf("indexing card (content may exceed the embedding model's context window — shorten the body and move details to a reference document): %w", err)
 	}
 
 	// Add to BM25
@@ -199,15 +206,24 @@ func (s *Store) DeleteCard(id string) error {
 		return fmt.Errorf("card not found: %s", id)
 	}
 
+	// Read card to find reference file before deleting
+	existing, _ := s.readCardByID(id)
+
 	// Remove from indexes
 	if err := s.deleteFromVectorIndex(id); err != nil {
 		return fmt.Errorf("removing vector: %w", err)
 	}
 	s.bm25.RemoveDocument(id)
 
-	// Remove file
+	// Remove card file
 	if err := card.DeleteCardFile(p, s.cfg.CardsDir()); err != nil {
 		return fmt.Errorf("deleting card file: %w", err)
+	}
+
+	// Remove reference file if present
+	if existing != nil && existing.Reference != "" {
+		refPath := filepath.Join(s.cfg.CardsDir(), existing.Reference)
+		os.RemoveAll(filepath.Dir(refPath))
 	}
 
 	// Update map
@@ -313,5 +329,68 @@ func (s *Store) gitCommit(msg string) error {
 			When:  time.Now(),
 		},
 	})
+	return err
+}
+
+// isStoredRef returns true if the path is already a KB-relative reference
+// path (stored under _refs/). External source paths return false.
+func isStoredRef(ref string) bool {
+	return strings.HasPrefix(ref, "_refs/") || strings.HasPrefix(ref, filepath.ToSlash(filepath.Join("_refs"))+"/")
+}
+
+// copyReferenceFile copies the external file at c.Reference into the KB's
+// _refs/<card-id>/ directory and updates c.Reference to the KB-relative path.
+func (s *Store) copyReferenceFile(c *card.Card) error {
+	src := c.Reference
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("reference file not found: %s — provide a valid file path or omit the reference field", src)
+		}
+		return fmt.Errorf("checking reference file: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("reference path is a directory, not a file: %s", src)
+	}
+
+	refDir := filepath.Join(s.cfg.CardsDir(), "_refs", c.ID)
+	if err := os.MkdirAll(refDir, 0755); err != nil {
+		return fmt.Errorf("creating reference directory: %w", err)
+	}
+
+	dst := filepath.Join(refDir, filepath.Base(src))
+	if err := copyFile(src, dst); err != nil {
+		return fmt.Errorf("copying reference file: %w", err)
+	}
+
+	// Update Reference to KB-relative path (relative to CardsDir)
+	rel, err := filepath.Rel(s.cfg.CardsDir(), dst)
+	if err != nil {
+		return fmt.Errorf("computing reference relative path: %w", err)
+	}
+	c.Reference = filepath.ToSlash(rel)
+	return nil
+}
+
+// copyFile copies a file from src to dst, preserving file mode.
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	info, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
 	return err
 }

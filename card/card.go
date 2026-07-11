@@ -18,7 +18,7 @@ var (
 	ErrEmptyTitle   = errors.New("card title must not be empty")
 	ErrEmptySummary = errors.New("card summary must not be empty")
 	ErrEmptyBody    = errors.New("card body must not be empty")
-	ErrBodyTooLong  = fmt.Errorf("card body exceeds %d tokens", MaxBodyTokens)
+	ErrBodyTooLong  = fmt.Errorf("card body exceeds %d tokens — shorten the body to a concise summary and attach the detailed content as a reference document (use the 'reference' parameter in upsert_card)", MaxBodyTokens)
 	ErrEmptyID      = errors.New("card id must not be empty")
 	ErrEmptyPath    = errors.New("card path must not be empty")
 )

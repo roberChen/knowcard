@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,5 +315,111 @@ func TestStore_StandardGitNotVisible(t *testing.T) {
 	vcsDir := cfg.VcsDir()
 	if _, err := os.Stat(vcsDir); os.IsNotExist(err) {
 		t.Error("_vcs directory should exist")
+	}
+}
+
+func TestStore_ReferenceFile(t *testing.T) {
+	cfg := tempConfig(t)
+	s, _ := OpenWithEmbedder(cfg, newFakeEmbedder())
+	defer s.Close()
+
+	// Create a temp source file to use as reference
+	srcFile := filepath.Join(t.TempDir(), "design.md")
+	srcContent := "# Design Doc\n\nDetailed architecture notes..."
+	if err := os.WriteFile(srcFile, []byte(srcContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &card.Card{
+		ID:        card.NewID(),
+		Path:      "arch/design",
+		Title:     "Design", Summary: "S", Body: "B",
+		Reference: srcFile,
+		Created:   time.Now(), Updated: time.Now(),
+	}
+	if err := s.UpsertCard(c); err != nil {
+		t.Fatalf("UpsertCard with reference failed: %v", err)
+	}
+
+	// Reference should now be a KB-relative path
+	if c.Reference == srcFile {
+		t.Fatal("Reference should be updated to KB-relative path after upsert")
+	}
+	expectedRef := filepath.ToSlash(filepath.Join("_refs", c.ID, "design.md"))
+	if c.Reference != expectedRef {
+		t.Errorf("Reference = %q, want %q", c.Reference, expectedRef)
+	}
+
+	// Reference file should exist in KB
+	refPath := filepath.Join(cfg.CardsDir(), c.Reference)
+	data, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatalf("reference file not copied to KB: %v", err)
+	}
+	if string(data) != srcContent {
+		t.Errorf("reference file content mismatch")
+	}
+
+	// _refs should not be picked up as cards by loadIndex/Rebuild
+	if err := s.Rebuild(); err != nil {
+		t.Fatalf("Rebuild failed: %v", err)
+	}
+	results := s.ListCards("")
+	for _, r := range results {
+		if r.ID == "" {
+			t.Error("found a card with empty ID (likely from _refs)")
+		}
+	}
+
+	// DeleteCard should remove the reference directory
+	if err := s.DeleteCard(c.ID); err != nil {
+		t.Fatalf("DeleteCard failed: %v", err)
+	}
+	refDir := filepath.Join(cfg.CardsDir(), "_refs", c.ID)
+	if _, err := os.Stat(refDir); !os.IsNotExist(err) {
+		t.Error("reference directory should be deleted with card")
+	}
+}
+
+func TestStore_ReferenceFileNotFound(t *testing.T) {
+	cfg := tempConfig(t)
+	s, _ := OpenWithEmbedder(cfg, newFakeEmbedder())
+	defer s.Close()
+
+	c := &card.Card{
+		ID:        card.NewID(),
+		Path:      "test/noref",
+		Title:     "T", Summary: "S", Body: "B",
+		Reference: "/nonexistent/path/to/file.md",
+		Created:   time.Now(), Updated: time.Now(),
+	}
+	err := s.UpsertCard(c)
+	if err == nil {
+		t.Fatal("expected error for nonexistent reference file")
+	}
+	if !strings.Contains(err.Error(), "reference file not found") {
+		t.Errorf("error should mention 'reference file not found', got: %v", err)
+	}
+}
+
+func TestStore_BodyTooLongError(t *testing.T) {
+	cfg := tempConfig(t)
+	s, _ := OpenWithEmbedder(cfg, newFakeEmbedder())
+	defer s.Close()
+
+	// Create body that exceeds MaxBodyTokens via heuristic (len/3)
+	longBody := strings.Repeat("a", card.MaxBodyTokens*3+100)
+	c := &card.Card{
+		ID:      card.NewID(),
+		Path:    "test/long",
+		Title:   "T", Summary: "S", Body: longBody,
+		Created: time.Now(), Updated: time.Now(),
+	}
+	err := s.UpsertCard(c)
+	if err == nil {
+		t.Fatal("expected error for oversized body")
+	}
+	if !strings.Contains(err.Error(), "shorten") || !strings.Contains(err.Error(), "reference") {
+		t.Errorf("error should guide to shorten body and use reference, got: %v", err)
 	}
 }
