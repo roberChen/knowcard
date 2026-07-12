@@ -161,6 +161,96 @@ embed:
   model: nomic-embed-text
 ```
 
+### Local model setup guide
+
+The `local` backend uses [yzma](https://github.com/hybridgroup/yzma) to call llama.cpp shared libraries via FFI (no CGo). You need to install the shared libraries and download a GGUF model before configuring the backend.
+
+#### Step 1: Install libllama shared libraries
+
+Download pre-built binaries from [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases):
+
+```bash
+# Check the latest version
+curl -s https://hybridgroup.github.io/llama-cpp-builder/version.json
+# {"tag_name":"b9975"}
+
+# Download and extract (Linux x64 CPU example)
+mkdir -p ~/.knowcard/lib
+download https://github.com/ggml-org/llama.cpp/releases/download/b9975/llama-b9975-bin-ubuntu-x64.tar.gz
+tar xzf llama-b9975-bin-ubuntu-x64.tar.gz -C /tmp/llama-extract
+
+# Copy all .so files (and symlinks) into a flat directory
+cp /tmp/llama-extract/llama-b9975/lib*.so* ~/.knowcard/lib/
+```
+
+The lib directory must contain these files (symlinks resolved):
+
+| File | Required by |
+|---|---|
+| `libggml.so` | GGML core |
+| `libggml-base.so` | GGML base |
+| `libllama.so` | Llama model loading, inference |
+| `libmtmd.so` | Multimodal support |
+
+#### Step 2: Download a GGUF embedding model
+
+Two recommended small models (both ~600 MB, 1024-dim):
+
+```bash
+mkdir -p ~/.knowcard/models
+
+# Qwen3-Embedding-0.6B (pooling: last)
+# From: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF
+# File: Qwen3-Embedding-0.6B-Q8_0.gguf (~610 MB)
+
+# bge-m3 (pooling: mean)
+# From: https://huggingface.co/gpustack/bge-m3-GGUF
+# File: bge-m3-Q8_0.gguf (~606 MB)
+```
+
+#### Step 3: Write the config
+
+**Qwen3-Embedding-0.6B:**
+
+```yaml
+embed:
+  backend: local
+  model_path: ~/.knowcard/models/Qwen3-Embedding-0.6B-Q8_0.gguf
+  lib_path: ~/.knowcard/lib           # directory containing libllama.so
+  pooling: last                       # Qwen models use last-token pooling
+  context_size: 2048
+  batch_size: 512
+```
+
+**bge-m3:**
+
+```yaml
+embed:
+  backend: local
+  model_path: ~/.knowcard/models/bge-m3-Q8_0.gguf
+  lib_path: ~/.knowcard/lib           # directory containing libllama.so
+  pooling: mean                       # bge-m3 requires mean pooling
+  context_size: 2048
+  batch_size: 512
+```
+
+#### Config field reference
+
+| Field | Description | Default |
+|---|---|---|
+| `backend` | Set to `local` for yzma/llama.cpp | `local` |
+| `model_path` | Absolute path to the GGUF model file | *required* |
+| `lib_path` | **Directory** containing `libllama.so` (not the file itself) | `"llama"` (system linker) |
+| `pooling` | Pooling strategy: `last` (Qwen), `mean` (bge-m3), `cls` | `last` |
+| `context_size` | Model context window size | `2048` |
+| `batch_size` | Batch processing size | `512` |
+
+> **Pooling matters**: Qwen embedding models use `last`-token pooling. bge-m3 requires `mean` pooling. Setting the wrong pooling type will produce nil embeddings or poor search quality.
+
+> **lib_path is a directory**: yzma internally does `filepath.Join(lib_path, "libllama.so")`. Do not point it at the `.so` file directly.
+
+> **LD_LIBRARY_PATH**: If the `.so` dependency chain is not in a system path, set `export LD_LIBRARY_PATH=~/.knowcard/lib` before running knowcard.
+
 ## Supported Embedding Models
 
 ### Qwen Models (recommended)
