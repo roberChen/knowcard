@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/hybridgroup/yzma/pkg/llama"
@@ -45,6 +49,48 @@ func poolingFromString(s string) llama.PoolingType {
 	}
 }
 
+// prependLibPath adds libDir to the platform-specific library search path
+// environment variable so that the dynamic linker can resolve dependencies
+// of the loaded shared libraries (e.g. libggml-base.so when loading
+// libllama.so). Without this, libraries outside the system linker search
+// path will fail to load due to missing transitive dependencies.
+//
+// Platform mapping:
+//   - Linux:   LD_LIBRARY_PATH
+//   - macOS:   DYLD_LIBRARY_PATH
+//   - Windows: PATH (Windows uses PATH for DLL resolution)
+func prependLibPath(libDir string) {
+	if libDir == "" {
+		return
+	}
+	abs, err := filepath.Abs(libDir)
+	if err != nil {
+		abs = libDir
+	}
+	var envVar string
+	switch runtime.GOOS {
+	case "darwin":
+		envVar = "DYLD_LIBRARY_PATH"
+	case "windows":
+		envVar = "PATH"
+	default: // linux, freebsd, etc.
+		envVar = "LD_LIBRARY_PATH"
+	}
+	cur := os.Getenv(envVar)
+	if cur == "" {
+		os.Setenv(envVar, abs)
+	} else {
+		// Only prepend if not already present
+		parts := strings.Split(cur, string(os.PathListSeparator))
+		for _, p := range parts {
+			if p == abs {
+				return // already on the path
+			}
+		}
+		os.Setenv(envVar, abs+string(os.PathListSeparator)+cur)
+	}
+}
+
 // NewLocalEmbedder loads the model and prepares the context for embedding.
 func NewLocalEmbedder(cfg LocalConfig) (*LocalEmbedder, error) {
 	if cfg.ModelPath == "" {
@@ -53,6 +99,12 @@ func NewLocalEmbedder(cfg LocalConfig) (*LocalEmbedder, error) {
 
 	le := &LocalEmbedder{
 		pooling: poolingFromString(cfg.Pooling),
+	}
+
+	// Ensure the dynamic linker can find transitive dependencies (libggml.so,
+	// libggml-base.so, etc.) that live alongside libllama in libPath.
+	if cfg.LibPath != "" {
+		prependLibPath(cfg.LibPath)
 	}
 
 	// Load shared library (idempotent in yzma)
