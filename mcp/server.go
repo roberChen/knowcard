@@ -2,10 +2,13 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -48,11 +51,12 @@ After completing your work, reflect on whether you discovered or learned new pro
 
 **If new knowledge was discovered, you MUST complete these steps BEFORE composing your final response:**
 
-5. **RECALL BEFORE UPSERT** — Call recall with keywords related to the new knowledge to find existing cards that should be updated. Do NOT create a card without checking first.
-6. **DECIDE: UPDATE OR CREATE** — Explicitly state your decision and reasoning:
-   - **UPDATE** (existing card found): "Updating card <id> because <what changed>" — pass the existing card's id to upsert_card.
+5. **UPSERT_PRECHECK** — Call upsert_precheck with the planned card's title, summary, path, and keywords. This searches for existing cards covering the same topic. You MUST pass the exact same values you will use in upsert_card — mismatches will cause upsert_card to be rejected.
+6. **DECIDE: UPDATE, CREATE, OR SKIP** — Review the upsert_precheck results and explicitly state your decision:
+   - **UPDATE** (existing card found): "Updating card <id> because <what changed>" — read the card with get_cards if needed, then pass the existing card's id to upsert_card.
    - **CREATE** (no relevant card found): "Creating new card because <why this topic is distinct and no existing card covers it>" — omit id in upsert_card.
-7. **UPSERT** — Execute the upsert_card call.
+   - **SKIP** (existing card already accurate): "Not recording — existing card <id> already covers this accurately" — do not call upsert_card.
+7. **UPSERT** — Call upsert_card with the same title, summary, path, and keywords you used in upsert_precheck.
 
 ### When the Cycle Does Not Apply
 
@@ -69,14 +73,15 @@ Phase 1 (recall) always applies when the task touches the project or domain. Pha
 Before sending your final reply to the user, verify:
 - If the task involved the project/domain: did I recall before doing other work?
 - Did my work discover new project/domain knowledge not already in the wiki?
-- If yes: did I recall for duplicates, decide update/create, and execute upsert_card?
+- If yes: did I call upsert_precheck with matching parameters, decide update/create/skip, and execute upsert_card?
 - If no new knowledge: did I explicitly state why I am not recording?
 
 ## When to Use Each Tool
 
 - **recall**: When you need project/domain knowledge. Always before other work (code search, web search, file reading). This is the project's local wiki — consult it first.
 - **get_cards**: After recall returns relevant results.
-- **upsert_card**: When you discovered new project/domain knowledge. Keep the wiki up to date — recording is part of completing your task, not an optional follow-up.
+- **upsert_precheck**: MANDATORY before every upsert_card call. Pass the planned card's title, summary, path, and keywords to search for duplicates. You MUST use the exact same values in the subsequent upsert_card call.
+- **upsert_card**: When you discovered new project/domain knowledge. Requires a prior upsert_precheck with matching parameters — otherwise the call is rejected.
 - **delete_card**: When a card is outdated, incorrect, or no longer relevant.
 - **init**: When no knowledge base exists for the current directory.
 
@@ -103,7 +108,8 @@ Pass the existing card's id to upsert_card when you discover ANY of:
 - **Treating recording as optional or "when the user asks"** — updating the wiki IS part of completing your task
 - Discovering new project/domain details but only recording them when explicitly asked
 - Creating duplicate cards instead of updating existing ones (always pass the existing card id)
-- Calling upsert_card without first calling recall to check for existing cards
+- Calling upsert_card without first calling upsert_precheck — the call will be REJECTED
+- Calling upsert_precheck and upsert_card with different title/summary/path/keywords — the call will be REJECTED
 - Calling upsert_card without explicitly stating whether it's an update or create, and why
 
 ## Path Convention
@@ -131,13 +137,16 @@ type Server struct {
 	cfg   kc.Config
 	mu    sync.Mutex
 	store *kc.Store
+	// preMu protects preSeen.
+	preMu   sync.Mutex
+	preSeen map[string]bool // precheck signatures from upsert_precheck calls
 }
 
 // NewServer creates an MCP server with the given global config.
 // It eagerly attempts to find and open a knowledge base from the current
 // working directory. If none is found, the server starts without a store.
 func NewServer(cfg kc.Config) *Server {
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: cfg, preSeen: make(map[string]bool)}
 	s.tryOpenStore()
 	return s
 }
@@ -187,6 +196,7 @@ func (s *Server) Serve() error {
 
 	mcpSrv.AddTool(s.recallTool(), s.handleRecall)
 	mcpSrv.AddTool(s.getCardsTool(), s.handleGetCards)
+	mcpSrv.AddTool(s.upsertPrecheckTool(), s.handleUpsertPrecheck)
 	mcpSrv.AddTool(s.upsertCardTool(), s.handleUpsertCard)
 	mcpSrv.AddTool(s.deleteCardTool(), s.handleDeleteCard)
 	mcpSrv.AddTool(s.initTool(), s.handleInit)
@@ -358,24 +368,146 @@ func (s *Server) handleGetCards(ctx context.Context, req mcp.CallToolRequest) (*
 	return mcp.NewToolResultText(sb.String()), nil
 }
 
+// --- upsert_precheck ---
+
+func (s *Server) upsertPrecheckTool() mcp.Tool {
+	return mcp.NewTool("upsert_precheck",
+		mcp.WithDescription(`Pre-check before creating or updating a knowledge card. This is MANDATORY before every upsert_card call.
+
+Accepts the planned card's title, keywords, summary, and path. Searches the existing knowledge base using those fields to find potentially matching cards. Returns the recall results so you can decide:
+
+1. **UPDATE an existing card** — if a result clearly covers the same topic, read it with get_cards, then call upsert_card with that card's id.
+2. **CREATE a new card** — if no existing card covers the topic, call upsert_card without an id.
+3. **DO NOTHING** — if an existing card already accurately covers the topic and needs no changes.
+
+You MUST call this tool with the SAME title, keywords, summary, and path values you intend to use in upsert_card. If these fields do not match between upsert_precheck and upsert_card, the upsert will be REJECTED.
+
+**Workflow**: upsert_precheck → judge results → (get_cards if relevant) → upsert_card.`),
+		mcp.WithString("title",
+			mcp.Required(),
+			mcp.Description("Planned card title — must match the title you will use in upsert_card"),
+		),
+		mcp.WithString("summary",
+			mcp.Required(),
+			mcp.Description("Planned card summary — must match the summary you will use in upsert_card"),
+		),
+		mcp.WithString("path",
+			mcp.Required(),
+			mcp.Description("Planned semantic path — must match the path you will use in upsert_card"),
+		),
+		mcp.WithArray("keywords",
+			mcp.Description("Planned keywords — must match the keywords you will use in upsert_card"),
+			mcp.Items(map[string]interface{}{"type": "string"}),
+		),
+	)
+}
+
+// extractKeywords normalizes the keywords argument from MCP tool input
+// into a sorted string slice. Accepts both []interface{} and comma-separated string.
+func extractKeywords(raw interface{}) []string {
+	var kws []string
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+				kws = append(kws, strings.TrimSpace(str))
+			}
+		}
+	case string:
+		for _, part := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				kws = append(kws, trimmed)
+			}
+		}
+	}
+	sort.Strings(kws)
+	return kws
+}
+
+// precheckSignature computes a deterministic hash of the card identity fields
+// (title, summary, path, keywords). The same fields are checked in both
+// upsert_precheck and upsert_card so we can verify the precheck was performed
+// with matching parameters.
+func precheckSignature(title, summary, path string, keywords []string) string {
+	kws := make([]string, len(keywords))
+	copy(kws, keywords)
+	sort.Strings(kws)
+	raw := strings.ToLower(title) + "\x00" +
+		strings.ToLower(summary) + "\x00" +
+		strings.ToLower(path) + "\x00" +
+		strings.Join(kws, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) handleUpsertPrecheck(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	store, err := s.getStore()
+	if err != nil {
+		return noKnowledgeBaseResult(), nil
+	}
+
+	title, _ := req.GetArguments()["title"].(string)
+	summary, _ := req.GetArguments()["summary"].(string)
+	path, _ := req.GetArguments()["path"].(string)
+
+	if title == "" || summary == "" || path == "" {
+		return mcp.NewToolResultError("title, summary, and path are all required"), nil
+	}
+
+	keywords := extractKeywords(req.GetArguments()["keywords"])
+
+	// Record this precheck so upsert_card can verify it was called.
+	sig := precheckSignature(title, summary, path, keywords)
+	s.preMu.Lock()
+	s.preSeen[sig] = true
+	s.preMu.Unlock()
+
+	// Compose a search query from the card metadata.
+	queryParts := []string{title, summary}
+	queryParts = append(queryParts, keywords...)
+	query := strings.Join(queryParts, " ")
+
+	results, err := store.Recall(query, kc.RecallOpts{TopK: 10})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("precheck search failed: %v", err)), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Pre-check complete. Review the results below and decide:\n")
+	sb.WriteString("- UPDATE: a result clearly covers the same topic → read it with get_cards, then upsert_card with that card's id\n")
+	sb.WriteString("- CREATE: no existing card covers this topic → upsert_card without an id\n")
+	sb.WriteString("- DO NOTHING: an existing card already accurately covers this → skip upsert_card entirely\n\n")
+
+	if len(results) == 0 {
+		sb.WriteString("No matching cards found. This topic appears to be new — you can proceed to CREATE a new card.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Found %d potentially related card(s). Read their titles and summaries to judge relevance:\n\n", len(results)))
+		for i, r := range results {
+			sb.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, r.Title))
+			sb.WriteString(fmt.Sprintf("   - id: `%s`\n", r.ID))
+			sb.WriteString(fmt.Sprintf("   - path: `%s`\n", r.Path))
+			sb.WriteString(fmt.Sprintf("   - score: %.4f (%s)\n", r.Score, r.HitType))
+			sb.WriteString(fmt.Sprintf("   - summary: %s\n\n", r.Summary))
+		}
+		sb.WriteString("You MUST explicitly judge relevance before proceeding to upsert_card. Do NOT skip this step.\n")
+	}
+
+	return mcp.NewToolResultText(sb.String()), nil
+}
+
 // --- upsert_card ---
 
 func (s *Server) upsertCardTool() mcp.Tool {
 	return mcp.NewTool("upsert_card",
 		mcp.WithDescription(`Create or update a knowledge card. This is how the memory system learns.
 
-**IMPORTANT — When to call this tool**: When your work discovered new project/domain knowledge that isn't already in the wiki — code details, architecture patterns, constants, behavioral flows, debugging solutions, conventions, domain insights. Recording it is part of completing your task, NOT an optional follow-up. When in doubt, record.
+**MANDATORY PRE-CHECK**: You MUST call upsert_precheck with the same title, summary, path, and keywords BEFORE calling this tool. If you skip upsert_precheck or use different values, this call will be REJECTED. The workflow is: upsert_precheck → judge results → (get_cards if relevant) → upsert_card.
 
-**Before calling this tool, you MUST**:
-1. Call recall with relevant keywords to check if a similar card already exists.
-2. Explicitly state your decision and reasoning:
-   - If updating: "Updating card <id> because <what changed>" — pass the existing card's id.
-   - If creating: "Creating new card because <why this topic is distinct and uncovered>" — omit id.
-3. Then execute the upsert_card call.
+**When to call this tool**: When your work discovered new project/domain knowledge that isn't already in the wiki — code details, architecture patterns, constants, behavioral flows, debugging solutions, conventions, domain insights. Recording it is part of completing your task, NOT an optional follow-up. When in doubt, record.
 
 **When to create**: you learned something worth remembering — code patterns, architectural decisions, debugging solutions, project conventions, domain knowledge, tool configurations, etc.
 
-**When to update**: a card's information is incomplete or outdated and you have better/newer information.
+**When to update**: a card's information is incomplete or outdated and you have better/newer information. Pass the existing card's id (obtained from recall/upsert_precheck results).
 
 **Card structure**:
 - path: semantic location in the knowledge tree (e.g. 'programming/go/memory-escape')
@@ -433,18 +565,18 @@ func (s *Server) handleUpsertCard(ctx context.Context, req mcp.CallToolRequest) 
 		c.ID = card.NewID()
 	}
 
-	// Keywords
-	if kw, ok := req.GetArguments()["keywords"]; ok {
-		switch v := kw.(type) {
-		case []interface{}:
-			for _, item := range v {
-				if str, ok := item.(string); ok {
-					c.Keywords = append(c.Keywords, str)
-				}
-			}
-		case string:
-			c.Keywords = strings.Split(v, ",")
-		}
+	c.Keywords = extractKeywords(req.GetArguments()["keywords"])
+
+	// Enforce: upsert_precheck must have been called with matching
+	// title, summary, path, and keywords before we allow the upsert.
+	sig := precheckSignature(c.Title, c.Summary, c.Path, c.Keywords)
+	s.preMu.Lock()
+	seen := s.preSeen[sig]
+	s.preMu.Unlock()
+	if !seen {
+		return mcp.NewToolResultError(
+			"REJECTED: you must call upsert_precheck with the same title, summary, path, and keywords " +
+				"before calling upsert_card. Call upsert_precheck first, review the results, then retry upsert_card."), nil
 	}
 
 	if err := store.UpsertCard(c); err != nil {
