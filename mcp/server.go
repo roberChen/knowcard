@@ -268,8 +268,10 @@ func (s *Server) handleRecall(ctx context.Context, req mcp.CallToolRequest) (*mc
 
 	results, err := store.Recall(query, opts)
 	if err != nil {
+		store.Logger().Error("recall failed", "query", query, "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("recall failed: %v", err)), nil
 	}
+	store.Logger().Info("tool: recall", "query", query, "results", len(results))
 
 	var sb strings.Builder
 	if len(results) == 0 {
@@ -580,8 +582,11 @@ func (s *Server) handleUpsertCard(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	if err := store.UpsertCard(c); err != nil {
+		store.Logger().Error("upsert failed", "id", c.ID, "path", c.Path, "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("upsert failed: %v", err)), nil
 	}
+
+	store.Logger().Info("tool: upsert_card", "id", c.ID, "path", c.Path, "title", c.Title)
 
 	result := map[string]interface{}{
 		"status": "saved",
@@ -619,8 +624,11 @@ func (s *Server) handleDeleteCard(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	if err := store.DeleteCard(id); err != nil {
+		store.Logger().Error("delete failed", "id", id, "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("delete failed: %v", err)), nil
 	}
+
+	store.Logger().Info("tool: delete_card", "id", id)
 
 	return mcp.NewToolResultText(fmt.Sprintf("Card %s has been deleted.", id)), nil
 }
@@ -678,5 +686,6 @@ func (s *Server) handleInit(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	s.store = store
 	s.mu.Unlock()
 
+	store.Logger().Info("tool: init", "dir", kcDir)
 	return mcp.NewToolResultText(fmt.Sprintf("Initialized knowledge base at %s", kcDir)), nil
 }

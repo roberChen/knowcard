@@ -39,6 +39,9 @@ type Config struct {
 
 	// Number of candidates each retrieval lane fetches before fusion (default 30)
 	CandidatePool int `yaml:"candidate_pool"`
+
+	// Logging level: "debug", "info", "warn", "error" (default "info")
+	LogLevel string `yaml:"log_level,omitempty"`
 }
 
 type EmbedConfig struct {
@@ -160,6 +163,8 @@ func (c *Config) VcsDir() string    { return filepath.Join(c.Root, "_vcs") }
 func (c *Config) IndexDir() string  { return filepath.Join(c.Root, "index") }
 func (c *Config) ChromemDir() string { return filepath.Join(c.IndexDir(), "chromem") }
 func (c *Config) ManifestPath() string { return filepath.Join(c.Root, "manifest.json") }
+func (c *Config) LogsDir() string   { return filepath.Join(c.Root, "logs") }
+func (c *Config) LogPath() string   { return filepath.Join(c.LogsDir(), "knowcard.log") }
 
 // EnsureDirs creates all required per-project directories.
 func (c *Config) EnsureDirs() error {
@@ -168,6 +173,7 @@ func (c *Config) EnsureDirs() error {
 		c.CardsDir(),
 		c.VcsDir(),
 		c.IndexDir(),
+		c.LogsDir(),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,16 @@ type Store struct {
 	bm25     *search.BM25
 	repo     *git.Repository
 	idToPath map[string]string // card ID → relative path (no .md extension)
+	logger   *slog.Logger
+	logFile  *os.File
+}
+
+// Logger returns the project-scoped structured logger.
+func (s *Store) Logger() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // RecallResult is a lightweight search result (no full body).
@@ -96,9 +107,17 @@ func openWithEmbedder(cfg Config, emb embed.Embedder) (*Store, error) {
 		return nil, err
 	}
 
+	// Set up project-scoped logger
+	logger, logFile, err := NewLogger(cfg.LogPath(), parseLogLevel(cfg.LogLevel))
+	if err != nil {
+		return nil, fmt.Errorf("initializing logger: %w", err)
+	}
+	logger.Info("opening store", "root", cfg.Root, "embed_backend", cfg.Embed.Backend)
+
 	// Open or create chromem-go persistent DB
 	db, err := chromem.NewPersistentDB(cfg.ChromemDir(), false)
 	if err != nil {
+		logFile.Close()
 		return nil, fmt.Errorf("opening vector DB: %w", err)
 	}
 
@@ -108,12 +127,14 @@ func openWithEmbedder(cfg Config, emb embed.Embedder) (*Store, error) {
 	})
 	col, err := db.GetOrCreateCollection(collectionName, nil, embedFunc)
 	if err != nil || col == nil {
+		logFile.Close()
 		return nil, fmt.Errorf("failed to get or create collection")
 	}
 
 	// Open or init git repo with separated git-dir and work-tree
 	repo, err := openOrInitRepo(cfg.VcsDir(), cfg.CardsDir())
 	if err != nil {
+		logFile.Close()
 		return nil, fmt.Errorf("opening git repo: %w", err)
 	}
 
@@ -125,20 +146,28 @@ func openWithEmbedder(cfg Config, emb embed.Embedder) (*Store, error) {
 		bm25:     search.NewBM25(),
 		repo:     repo,
 		idToPath: make(map[string]string),
+		logger:   logger,
+		logFile:  logFile,
 	}
 
 	// Build id→path map and populate BM25 from chromem-go metadata if available
 	if err := s.loadIndex(); err != nil {
+		logFile.Close()
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
 
+	logger.Info("store ready", "cards", len(s.idToPath))
 	return s, nil
 }
 
 // Close releases resources.
 func (s *Store) Close() error {
+	s.Logger().Info("closing store")
 	if c, ok := s.embedder.(interface{ Close() error }); ok {
 		c.Close()
+	}
+	if s.logFile != nil {
+		s.logFile.Close()
 	}
 	return nil
 }

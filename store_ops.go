@@ -21,6 +21,7 @@ func (s *Store) Recall(query string, opts RecallOpts) ([]RecallResult, error) {
 	if opts.TopK <= 0 {
 		opts.TopK = 10
 	}
+	s.Logger().Debug("recall", "query", query, "top_k", opts.TopK, "path_prefix", opts.PathPref)
 	pool := s.cfg.CandidatePool
 	if pool <= 0 {
 		pool = 30
@@ -96,6 +97,7 @@ func (s *Store) Recall(query string, opts RecallOpts) ([]RecallResult, error) {
 		})
 	}
 
+	s.Logger().Info("recall complete", "query", query, "results", len(results))
 	return results, nil
 }
 
@@ -141,6 +143,7 @@ func (s *Store) ListCards(pathPrefix string) []RecallResult {
 // UpsertCard adds or replaces a card. It writes the .md file, updates both
 // indexes, copies any reference file into the KB, and auto-commits to git.
 func (s *Store) UpsertCard(c *card.Card) error {
+	s.Logger().Info("upsert card", "id", c.ID, "path", c.Path, "title", c.Title)
 	// Token count validation
 	if tc, ok := s.embedder.(embed.TokenCounter); ok {
 		if err := c.Validate(tc.CountTokens); err != nil {
@@ -196,6 +199,7 @@ func (s *Store) UpsertCard(c *card.Card) error {
 	}
 
 	// Update manifest
+	s.Logger().Info("upsert done", "id", c.ID, "path", c.Path)
 	return s.writeManifest()
 }
 
@@ -205,6 +209,7 @@ func (s *Store) DeleteCard(id string) error {
 	if !ok {
 		return fmt.Errorf("card not found: %s", id)
 	}
+	s.Logger().Info("delete card", "id", id, "path", p)
 
 	// Read card to find reference file before deleting
 	existing, _ := s.readCardByID(id)
@@ -249,6 +254,7 @@ func (s *Store) MoveCard(id, newPath string) error {
 	if oldPath == newPath {
 		return nil
 	}
+	s.Logger().Info("move card", "id", id, "from", oldPath, "to", newPath)
 
 	// Move file
 	if err := card.MoveCardFile(oldPath, newPath, s.cfg.CardsDir()); err != nil {
