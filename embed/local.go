@@ -97,6 +97,11 @@ func NewLocalEmbedder(cfg LocalConfig) (*LocalEmbedder, error) {
 		return nil, errors.New("model path is required")
 	}
 
+	// Verify model file exists
+	if _, err := os.Stat(cfg.ModelPath); err != nil {
+		return nil, fmt.Errorf("model_path %q: %w", cfg.ModelPath, err)
+	}
+
 	le := &LocalEmbedder{
 		pooling: poolingFromString(cfg.Pooling),
 	}
@@ -107,12 +112,21 @@ func NewLocalEmbedder(cfg LocalConfig) (*LocalEmbedder, error) {
 		prependLibPath(cfg.LibPath)
 	}
 
+	// Verify lib_path directory exists when explicitly provided
+	if cfg.LibPath != "" {
+		if _, err := os.Stat(cfg.LibPath); err != nil {
+			return nil, fmt.Errorf("lib_path directory %q: %w", cfg.LibPath, err)
+		}
+	}
+
 	// Load shared library (idempotent in yzma)
 	libPath := cfg.LibPath
 	if libPath == "" {
 		libPath = "llama" // let the dynamic linker find it
 	}
-	llama.Load(libPath)
+	if err := llama.Load(libPath); err != nil {
+		return nil, fmt.Errorf("loading libllama from %q (check that lib_path points to the directory containing libllama.so/libggml.so/libggml-base.so): %w", cfg.LibPath, err)
+	}
 	llama.LogSet(llama.LogSilent())
 	llama.Init()
 	le.libLoaded = true
